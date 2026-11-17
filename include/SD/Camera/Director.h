@@ -220,6 +220,48 @@ namespace SD::Camera
 		int poseMode{ 0 };
 	};
 
+	// SkyrimNet cinematic mode: SkyrimNet's dialogue drives the filming. Each line
+	// SkyrimNet reports names its speaker and who it's said to, and that pair is
+	// filmed the way other people's conversations are, with the player in the
+	// second slot whenever they're part of it. [SkyrimNet] in SD.ini; see
+	// Compat::SkyrimNet and SkyrimNetGate.h.
+	struct SkyrimNetTunables
+	{
+		// The mode itself, toggled by its key (F8 by default) and remembered between
+		// sessions. On, nothing happens until SkyrimNet dialogue arrives. [SkyrimNet]
+		// bCinematic.
+		bool on{ false };
+
+		// Every NPC speaker gets the same shot style instead of the rotation; the
+		// second NPC of a pair gets its mirror. bLockShot (F10), iLockedShot (the
+		// style, chosen with F9; a ShotType from the NPC side, Close Up by default).
+		bool lockShot{ false };
+		int  lockedShot{ 1 };
+
+		// Hundredths of a second a line waits for its speaker's voice before the
+		// camera cuts anyway (SkyrimNet reports a line before its voice is ready).
+		// 0 cuts as soon as the line is written. iVoiceWait.
+		int voiceWait{ 800 };
+
+		// Hundredths of a second of silence before the camera lets go; the next
+		// SkyrimNet line takes it again. 0 holds until the mode is switched off.
+		// iQuietRelease.
+		int quietRelease{ 1500 };
+
+		// Moving hands the camera back, and no line starts filming while you move.
+		// bReleaseOnMove.
+		bool releaseOnMove{ true };
+
+		// How far from you (world units) a speaker may be and still be filmed.
+		// iRange.
+		int range{ 2000 };
+
+		// Moves the HUD subtitle while a SkyrimNet conversation is filmed, in the
+		// subtitle movie's units; negative is up. Ignored while Subtitles In The
+		// Black Bar is on. iSubtitleYOffset.
+		int subtitleOffset{ -30 };
+	};
+
 	// Who the camera is on when the player overrides it with the hotkey. Not
 	// saved; resets to kAuto when the conversation ends.
 	enum class Framing : std::uint8_t
@@ -324,6 +366,28 @@ namespace SD::Camera
 
 		// The camera is filming other people rather than the player's conversation.
 		[[nodiscard]] static bool FilmingScene() noexcept;
+
+		// SkyrimNet cinematic mode. The live settings, and an apply for the menu
+		// (which leaves `on` alone: switch it with RequestSkyrimNet so the camera is
+		// handed back on the tick).
+		[[nodiscard]] static SkyrimNetTunables GetSkyrimNet();
+		static void                            ApplySkyrimNet(const SkyrimNetTunables& a_tunables);
+
+		// Keys, from the input thread; handled on the next tick, staged or not.
+		// Toggle the mode (F8), cycle and preview the NPC shot style (F9), lock or
+		// unlock it (F10).
+		static void RequestSkyrimNet() noexcept;
+		static void RequestSkyrimNetStyle() noexcept;
+		static void RequestSkyrimNetLock() noexcept;
+
+		// The camera is filming a SkyrimNet conversation.
+		[[nodiscard]] static bool FilmingSkyrimNet() noexcept;
+
+		// A load: drop SkyrimNet lines that belong to the outgoing world.
+		static void ForgetSkyrimNetLines();
+
+		// The shot styles F9 cycles through, as ShotType values, in order.
+		[[nodiscard]] static std::span<const std::uint8_t> SkyrimNetStyles() noexcept;
 
 		[[nodiscard]] static Framing CurrentFraming() noexcept;
 

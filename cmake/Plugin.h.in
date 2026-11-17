@@ -13,6 +13,6 @@ namespace Plugin
 	};
 
 	inline constexpr auto NAME = "@PROJECT_NAME@"sv;
-	inline constexpr auto DISPLAY_NAME = "Cinematic Conversation Camera"sv;
+	inline constexpr auto DISPLAY_NAME = "Cinematic Conversation Camera (SkyrimNet edition)"sv;
 	inline constexpr auto SHORT_NAME = "SD"sv;
 }

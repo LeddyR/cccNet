@@ -29,10 +29,32 @@ namespace SD::Core
 		[[nodiscard]] const char* IniKey(Action a_action)
 		{
 			switch (a_action) {
-			case Action::kFraming:   return "iKeyFraming";
-			case Action::kFilmScene: return "iKeyFilmScene";
-			default:                 return "iKeyNextAngle";
+			case Action::kFraming:        return "iKeyFraming";
+			case Action::kFilmScene:      return "iKeyFilmScene";
+			case Action::kSkyrimNet:      return "iKeySkyrimNet";
+			case Action::kSkyrimNetStyle: return "iKeySkyrimNetStyle";
+			case Action::kSkyrimNetLock:  return "iKeySkyrimNetLock";
+			default:                      return "iKeyNextAngle";
 			}
+		}
+
+		// The binding when the ini names none. F8, F9 and F10 for the SkyrimNet keys,
+		// as SkyrimNet CCC shipped them; nothing for the rest.
+		[[nodiscard]] int DefaultKey(Action a_action)
+		{
+			switch (a_action) {
+			case Action::kSkyrimNet:      return 0x42;
+			case Action::kSkyrimNetStyle: return 0x43;
+			case Action::kSkyrimNetLock:  return 0x44;
+			default:                      return 0;
+			}
+		}
+
+		// Keys that work outside a conversation.
+		[[nodiscard]] bool WorksAnywhere(Action a_action)
+		{
+			return a_action == Action::kFilmScene || a_action == Action::kSkyrimNet ||
+			       a_action == Action::kSkyrimNetStyle || a_action == Action::kSkyrimNetLock;
 		}
 
 		// Escape cancels instead of binding, so an accidental capture can be backed
@@ -60,11 +82,17 @@ namespace SD::Core
 				const bool capturing = armed.load(std::memory_order_relaxed) >= 0;
 
 				// Normal presses only matter while a conversation is directed. Capture works
-				// anywhere (the panel is usually opened outside a conversation), and so does
-				// the film key, which starts filming.
-				const auto filmKey = bindings[static_cast<std::size_t>(Action::kFilmScene)].load(std::memory_order_relaxed);
+				// anywhere (the panel is usually opened outside a conversation), and so do the
+				// film key and the SkyrimNet keys.
+				bool anywhereBound = false;
+				for (std::size_t i = 0; i < kActions; ++i) {
+					if (WorksAnywhere(static_cast<Action>(i)) && bindings[i].load(std::memory_order_relaxed) != 0) {
+						anywhereBound = true;
+						break;
+					}
+				}
 				const bool staged = Camera::Director::Staging();
-				if (!capturing && !staged && filmKey == 0) {
+				if (!capturing && !staged && !anywhereBound) {
 					return RE::BSEventNotifyControl::kContinue;
 				}
 
@@ -95,7 +123,7 @@ namespace SD::Core
 							continue;
 						}
 						const auto action = static_cast<Action>(i);
-						if (!staged && action != Action::kFilmScene) {
+						if (!staged && !WorksAnywhere(action)) {
 							continue;
 						}
 						switch (action) {
@@ -104,6 +132,15 @@ namespace SD::Core
 							break;
 						case Action::kFilmScene:
 							Camera::Director::RequestScene();
+							break;
+						case Action::kSkyrimNet:
+							Camera::Director::RequestSkyrimNet();
+							break;
+						case Action::kSkyrimNetStyle:
+							Camera::Director::RequestSkyrimNetStyle();
+							break;
+						case Action::kSkyrimNetLock:
+							Camera::Director::RequestSkyrimNetLock();
 							break;
 						default:
 							Camera::Director::RequestCut();
@@ -121,7 +158,7 @@ namespace SD::Core
 			for (std::size_t i = 0; i < kActions; ++i) {
 				// Clamped to the scan code byte range, so a garbage value in a hand-edited ini
 				// reads as unassigned.
-				const int stored = Config::Int("Direction", IniKey(static_cast<Action>(i)), 0);
+				const int stored = Config::Int("Direction", IniKey(static_cast<Action>(i)), DefaultKey(static_cast<Action>(i)));
 				bindings[i].store(stored > 0 && stored <= 0xFF ?
 						static_cast<std::uint32_t>(stored) :
 						0u,
@@ -156,6 +193,9 @@ namespace SD::Core
 		Log::Info(Log::Category::kCore, "Camera hotkeys listening: next angle {}, framing {}, film their conversation {}."sv,
 			KeyName(Binding(Action::kNextAngle)), KeyName(Binding(Action::kFraming)),
 			KeyName(Binding(Action::kFilmScene)));
+		Log::Info(Log::Category::kCore, "SkyrimNet keys: cinematic mode {}, shot style {}, lock {}."sv,
+			KeyName(Binding(Action::kSkyrimNet)), KeyName(Binding(Action::kSkyrimNetStyle)),
+			KeyName(Binding(Action::kSkyrimNetLock)));
 	}
 
 	void Hotkeys::Refresh()

@@ -1,0 +1,79 @@
+# Builds SceneDirector.dll (Cinematic Conversation Camera, SkyrimNet edition) on
+# a Windows runner and uploads a ready-to-install mod archive.
+#
+# Run it from the Actions tab (Build -> Run workflow), or push to any branch.
+# When it finishes, open the run and download "SkyrimNet_CCC" under Artifacts.
+# Install that zip with your mod manager like any other mod.
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+
+    steps:
+      - name: Check out the source and CommonLibSSE-NG
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # A full vcpkg clone: vcpkg-configuration.json pins a registry baseline by
+      # commit, which a shallow clone may not contain.
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      # Built dependencies are cached between runs, so only the first build is slow.
+      - name: Restore cached dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-binary-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Set up the Visual Studio 2022 tools
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset skyrim -DSD_BUILD_TESTS=ON -DCOMMONLIB_PREBUILT=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset skyrim-release --parallel 4
+
+      - name: Run the tests
+        shell: pwsh
+        run: ctest --test-dir build/skyrim -C Release --output-on-failure
+
+      - name: Package the mod
+        shell: pwsh
+        run: |
+          $stage = "package-out\SkyrimNet_CCC"
+          New-Item -ItemType Directory -Force -Path "$stage\SKSE\Plugins" | Out-Null
+          Copy-Item "build\skyrim\Release\SceneDirector.dll" "$stage\SKSE\Plugins\"
+          Copy-Item "config\SD.ini" "$stage\SKSE\Plugins\"
+          Copy-Item "SKYRIMNET.md", "README.md", "USAGE.md", "CHANGELOG.md", "LICENSE", "LICENSING.md", "EXCEPTIONS.md", "THIRD-PARTY-NOTICES.md" "$stage\"
+          Copy-Item -Recurse "licenses" "$stage\licenses"
+          Get-ChildItem -Recurse $stage | Select-Object FullName, Length
+
+      - name: Upload the mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimNet_CCC
+          path: package-out/SkyrimNet_CCC
+          if-no-files-found: error

@@ -331,6 +331,54 @@ namespace SD::Scene
 		}
 	}
 
+	void Subtitles::Lift(float a_offset)
+	{
+		auto& hud = targets[1];
+		auto* ui = RE::UI::GetSingleton();
+		auto  view = ui ? ui->GetMovieView(hud.menu) : RE::GPtr<RE::GFxMovieView>{};
+		if (!view) {
+			Forget(hud);
+			return;
+		}
+		if (view.get() != hud.movie.get()) {
+			Forget(hud);
+			hud.movie = view;
+		}
+
+		RE::GFxValue move;
+		if (!view->GetVariable(&move, hud.move) || !move.IsDisplayObject()) {
+			return;
+		}
+		double y = 0.0;
+		if (!Number(move, "_y", y)) {
+			return;
+		}
+
+		// Same bookkeeping as PlaceOne: the movie's own position is read once, and a
+		// move the movie makes itself is adopted rather than fought.
+		if (!hud.haveOriginal) {
+			hud.originalY = y;
+			hud.haveOriginal = true;
+			hud.haveWritten = false;
+			Log::Info(Log::Category::kStaging, "SkyrimNet: moving the HUD subtitle by {:.0f} (its own _y {:.1f})."sv,
+				a_offset, y);
+		} else if (hud.haveWritten && std::abs(y - hud.writtenY) > 0.5) {
+			hud.originalY += y - hud.writtenY;
+			hud.haveWritten = false;
+		}
+
+		const double newY = hud.originalY + static_cast<double>(a_offset);
+		if (std::abs(newY - y) > 0.05) {
+			move.SetMember("_y", RE::GFxValue{ newY });
+			moved = true;
+		}
+
+		double stored = newY;
+		static_cast<void>(Number(move, "_y", stored));
+		hud.writtenY = stored;
+		hud.haveWritten = true;
+	}
+
 	void Subtitles::Release()
 	{
 		RestoreFurniture();

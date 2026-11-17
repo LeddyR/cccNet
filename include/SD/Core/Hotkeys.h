@@ -14,12 +14,16 @@ namespace SD::Core
 	class Hotkeys
 	{
 	public:
-		// The bindable actions. All ship unassigned.
+		// The bindable actions. The camera keys ship unassigned; the SkyrimNet keys
+		// ship on F8, F9 and F10.
 		enum class Action : std::uint8_t
 		{
-			kNextAngle,  // cut now, ignoring the hold floor
-			kFraming,    // cycle automatic / them / you / the room
-			kFilmScene,  // film the conversation in front of you, or stop; works outside one
+			kNextAngle,       // cut now, ignoring the hold floor
+			kFraming,         // cycle automatic / them / you / the room
+			kFilmScene,       // film the conversation in front of you, or stop; works outside one
+			kSkyrimNet,       // SkyrimNet cinematic mode on or off; works anywhere
+			kSkyrimNetStyle,  // cycle and preview the SkyrimNet NPC shot style; works anywhere
+			kSkyrimNetLock,   // lock or unlock that style; works anywhere
 			kCount
 		};
 

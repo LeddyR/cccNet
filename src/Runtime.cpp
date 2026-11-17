@@ -5,6 +5,7 @@
 #include "SD/Compat/Conflicts.h"
 #include "SD/Compat/DBReV.h"
 #include "SD/Compat/ImprovedCamera.h"
+#include "SD/Compat/SkyrimNet.h"
 #include "SD/Compat/SmoothCam.h"
 #include "SD/Compat/VoiceCommand.h"
 #include "SD/Core/Config.h"
@@ -140,6 +141,10 @@ namespace SD::Runtime
 		Compat::ImprovedCamera::Detect();
 
 		Compat::SmoothCam::Request();
+
+		// SkyrimNet's dialogue events, for the SkyrimNet cinematic mode. kDataLoaded is
+		// when its API is meant to be resolved; every SKSE plugin has loaded by now.
+		Compat::SkyrimNet::Connect();
 
 		// Before the menu registers, so the panel shows the file's values rather than
 		// built-in defaults.
@@ -383,6 +388,7 @@ namespace SD::Runtime
 		// Hand the camera back synchronously; anything deferred would run after the
 		// load.
 		Camera::Director::Close();
+		Camera::Director::ForgetSkyrimNetLines();
 		Scene::Performance::ResetForLoad();
 		Scene::LipSync::Release();
 		Dialogue::SceneWatch::Reset();

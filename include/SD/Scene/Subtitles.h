@@ -19,6 +19,11 @@ namespace SD::Scene
 		// HUDMenu's subtitle.
 		static void Place(float a_barFraction, bool a_hud, float a_delta);
 
+		// Moves HUDMenu's subtitle a_offset units (the movie's own _y units; negative
+		// is up) from where its movie had it. Every staged frame of a SkyrimNet
+		// conversation while Subtitles In The Black Bar is off. Release() puts it back.
+		static void Lift(float a_offset);
+
 		// Puts every moved subtitle back. Safe to call when nothing was moved.
 		static void Release();
 	};

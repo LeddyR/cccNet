@@ -9,6 +9,7 @@
 #include "SD/Camera/Shot.h"
 #include "SD/Camera/ShotAngles.h"
 #include "SD/Camera/ShotSelection.h"
+#include "SD/Camera/SkyrimNetGate.h"
 #include "SD/Camera/Situational.h"
 #include "SD/Camera/Space.h"
 #include "SD/Camera/Tripod.h"
@@ -16,6 +17,7 @@
 #include "SD/Camera/WalkSource.h"
 #include "SD/Compat/DBReV.h"
 #include "SD/Compat/ImprovedCamera.h"
+#include "SD/Compat/SkyrimNet.h"
 #include "SD/Compat/SmoothCam.h"
 #include "SD/Core/Config.h"
 #include "SD/Core/Logging.h"
@@ -114,6 +116,69 @@ namespace SD::Camera
 
 		// How close somebody must stand to the speaker to join their scene.
 		constexpr float kJoinReach = 700.0f;
+
+		// ---- SkyrimNet cinematic mode ------------------------------------------
+		//
+		// SkyrimNet's dialogue drives scene mode. Each line names its speaker and who
+		// it's said to; that pair is filmed like other people's conversation, with the
+		// player in the second slot whenever they're part of it. Lines wait in snGate
+		// until their voice is heard. See SkyrimNetGate.h and Compat/SkyrimNet.h.
+		using SnLine = Compat::SkyrimNetEvent::Line;
+		using SnGate = SkyrimNetGate<SnLine>;
+
+		SkyrimNetTunables snSettings{};
+		SnGate            snGate{};
+
+		// The staged scene was started (or taken over) by SkyrimNet.
+		bool snScene{ false };
+
+		// F9 pressed while filming: the next cut goes to the chosen style once, even
+		// when it isn't locked.
+		bool snPreview{ false };
+
+		// The line (cueCount) on which the locked style last failed to place. It isn't
+		// asked for again until the next line, so a room that can't fit it doesn't
+		// turn every frame into a cut.
+		std::uint32_t snFailedCue{ 0 };
+		bool          snFailed{ false };
+
+		std::atomic<bool> requestSkyrimNet{ false };
+		std::atomic<bool> requestSnStyle{ false };
+		std::atomic<bool> requestSnLock{ false };
+
+		// The player's own lines wait this long for their voice, then go anyway: they
+		// were just typed or spoken.
+		constexpr float kSnPlayerWait = 0.75f;
+
+		// How long after a line its voice is trusted to still be that line, beyond its
+		// estimated length. SkyrimNet replies run long.
+		constexpr float kSnVoiceSlack = 15.0f;
+
+		Log::OnceFlag snUnheardReported;
+		Log::OnceFlag snNotListeningReported;
+
+		// The shot styles F9 cycles through: the NPC side of the shot table, in the
+		// order a player would want to try them.
+		constexpr std::array<std::uint8_t, 18> kSnStyles{
+			static_cast<std::uint8_t>(ShotType::kCloseUp),
+			static_cast<std::uint8_t>(ShotType::kOverPlayerShoulder),
+			static_cast<std::uint8_t>(ShotType::kMediumNpc),
+			static_cast<std::uint8_t>(ShotType::kThreeQuarterNpc),
+			static_cast<std::uint8_t>(ShotType::kDirtyNpc),
+			static_cast<std::uint8_t>(ShotType::kCloseProfile),
+			static_cast<std::uint8_t>(ShotType::kCloseLow),
+			static_cast<std::uint8_t>(ShotType::kCloseHigh),
+			static_cast<std::uint8_t>(ShotType::kCloseWide),
+			static_cast<std::uint8_t>(ShotType::kExtremeClose),
+			static_cast<std::uint8_t>(ShotType::kLowAngle),
+			static_cast<std::uint8_t>(ShotType::kLongNpc),
+			static_cast<std::uint8_t>(ShotType::kMediumProfile),
+			static_cast<std::uint8_t>(ShotType::kLowProfile),
+			static_cast<std::uint8_t>(ShotType::kOverhead),
+			static_cast<std::uint8_t>(ShotType::kOverPlayerShoulderLow),
+			static_cast<std::uint8_t>(ShotType::kOverPlayerShoulderHigh),
+			static_cast<std::uint8_t>(ShotType::kOverPlayerShoulderWide),
+		};
 
 		// Whether Close() should put the player back in first person. Recorded at
 		// Open(), because by Close() a third-person camera looks the same either way.
@@ -2876,9 +2941,81 @@ namespace SD::Camera
 			}
 		}
 
+		// Whether a filmed SkyrimNet conversation is over, and why. Its own rules: no
+		// game scene to follow, the player may be one of the two, and SkyrimNet's
+		// replies can take several seconds to arrive.
+		[[nodiscard]] bool SkyrimNetSceneOver(std::string_view& a_why)
+		{
+			auto  a = subject.get();
+			auto  b = counterpart.get();
+			auto* player = RE::PlayerCharacter::GetSingleton();
+
+			if (!snSettings.on) {
+				a_why = "SkyrimNet cinematic mode switched off"sv;
+				return true;
+			}
+			if (!a || !b || !player || !Present(a.get()) || !Present(b.get())) {
+				a_why = "one of them is gone"sv;
+				return true;
+			}
+			if (player->IsInCombat()) {
+				a_why = "combat"sv;
+				return true;
+			}
+			if (snSettings.releaseOnMove && PlayerMoving()) {
+				a_why = "you moved"sv;
+				return true;
+			}
+
+			// Runtime normally hands the camera to the player's own conversation in the
+			// same frame; this is the fallback, as for other filmed scenes.
+			if (Dialogue::Session::GetSingleton().Active() || DialogueMenuOpen()) {
+				if (!sceneTalkSeen) {
+					sceneTalkSeen = true;
+					sceneTalkSince = Clock::now();
+				} else if (SecondsSince(sceneTalkSince) > 1.0f) {
+					a_why = "your own conversation started"sv;
+					return true;
+				}
+			} else {
+				sceneTalkSeen = false;
+			}
+
+			const auto  here = player->GetPosition();
+			const float range = static_cast<float>(std::clamp(snSettings.range, 300, 6000));
+			const float toA = Distance(here, a->GetPosition());
+			const float toB = b.get() == static_cast<RE::Actor*>(player) ? toA : Distance(here, b->GetPosition());
+			if (std::min(toA, toB) > range * 1.5f) {
+				a_why = "they walked away"sv;
+				return true;
+			}
+
+			// Silence, measured as in SceneOver, with two differences: a line waiting for
+			// its voice counts as the conversation still going, and the gap is the
+			// player's setting (0 never lets go).
+			const float sinceLine = SecondsSince(sceneLineAt);
+			const bool  heard = SoundPlaying(a.get()) || SoundPlaying(b.get()) ||
+				Dialogue::SceneWatch::Talking(a.get()) || Dialogue::SceneWatch::Talking(b.get());
+			const bool running = sinceLine < sceneLineSeconds ||
+				(heard && sinceLine < sceneLineSeconds * 2.0f + kSnVoiceSlack) || !snGate.Empty();
+			if (running || snSettings.quietRelease <= 0) {
+				sceneQuietSince = Clock::now();
+				return false;
+			}
+			if (SecondsSince(sceneQuietSince) >= static_cast<float>(snSettings.quietRelease) / 100.0f) {
+				a_why = "the conversation went quiet"sv;
+				return true;
+			}
+			return false;
+		}
+
 		// Whether the filmed scene is over, and why.
 		[[nodiscard]] bool SceneOver(std::string_view& a_why)
 		{
+			if (snScene) {
+				return SkyrimNetSceneOver(a_why);
+			}
+
 			auto  a = subject.get();
 			auto  b = counterpart.get();
 			auto* player = RE::PlayerCharacter::GetSingleton();
@@ -3068,6 +3205,19 @@ namespace SD::Camera
 			if (!a_speaker) {
 				return;
 			}
+			// A SkyrimNet conversation is paired by SkyrimNet's own events, which say who
+			// is talking to whom. A line the engine reports from one of the two only keeps
+			// it alive; anyone else is left out, so a passing guard can't take the
+			// player's place in the frame.
+			if (snScene) {
+				auto first = subject.get();
+				auto second = counterpart.get();
+				if ((first && first.get() == a_speaker) || (second && second.get() == a_speaker)) {
+					sceneQuietSince = Clock::now();
+				}
+				return;
+			}
+
 			const auto id = a_speaker->GetFormID();
 			if (lastSceneLine.id == id && lastSceneLine.text == a_text && SecondsSince(lastSceneLine.at) < 5.0f) {
 				return;
@@ -3139,6 +3289,409 @@ namespace SD::Camera
 			ApplySceneCue(fromFirst, a_words, a_intensity);
 		}
 
+		// ---- SkyrimNet cinematic mode ------------------------------------------
+
+		// A SkyrimNet form ID as a loaded actor, or null.
+		[[nodiscard]] RE::Actor* SnActor(std::uint32_t a_formId)
+		{
+			if (a_formId == 0) {
+				return nullptr;
+			}
+			if (a_formId == Compat::SkyrimNetEvent::kPlayerFormId) {
+				return RE::PlayerCharacter::GetSingleton();
+			}
+			return RE::TESForm::LookupByID<RE::Actor>(a_formId);
+		}
+
+		// Can this person be heard right now: a voice playing on them, or their
+		// subtitle up.
+		[[nodiscard]] bool SnAudible(std::uint32_t a_formId)
+		{
+			auto* actor = SnActor(a_formId);
+			return actor && Present(actor) && (SoundPlaying(actor) || Dialogue::SceneWatch::Talking(actor));
+		}
+
+		// Why a SkyrimNet line can't start filming now, or empty if it can.
+		[[nodiscard]] std::string_view SnBlocked()
+		{
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* ui = RE::UI::GetSingleton();
+			if (!player || !ui || !directing) {
+				return "the camera is switched off"sv;
+			}
+			if (player->IsInCombat()) {
+				return "combat"sv;
+			}
+			if (ui->GameIsPaused() || Dialogue::MenuWatch::ScreenTaken() || suspendedForMenu) {
+				return "a menu has the screen"sv;
+			}
+			if (DialogueMenuOpen() || Dialogue::Session::GetSingleton().Active()) {
+				return "you are in a conversation of your own"sv;
+			}
+			if (player->IsOnMount()) {
+				return "you are mounted"sv;
+			}
+			if (snSettings.releaseOnMove && PlayerMoving()) {
+				return "you are moving"sv;
+			}
+			return {};
+		}
+
+		// The player-side shot that answers an NPC-side one, for the second NPC of a
+		// pair under a locked style.
+		[[nodiscard]] ShotType MirrorShot(ShotType a_type)
+		{
+			switch (a_type) {
+			case ShotType::kOverPlayerShoulder:     return ShotType::kOverNpcShoulder;
+			case ShotType::kCloseUp:                return ShotType::kClosePlayer;
+			case ShotType::kMediumNpc:              return ShotType::kMediumPlayer;
+			case ShotType::kLongNpc:                return ShotType::kLongPlayer;
+			case ShotType::kLowAngle:               return ShotType::kPlayerLow;
+			case ShotType::kCloseProfile:           return ShotType::kPlayerProfile;
+			case ShotType::kCloseLow:               return ShotType::kPlayerLow;
+			case ShotType::kCloseHigh:              return ShotType::kHighAngle;
+			case ShotType::kCloseWide:              return ShotType::kMediumPlayer;
+			case ShotType::kExtremeClose:           return ShotType::kExtremeClosePlayer;
+			case ShotType::kDirtyNpc:               return ShotType::kDirtyPlayer;
+			case ShotType::kThreeQuarterNpc:        return ShotType::kThreeQuarterPlayer;
+			case ShotType::kMediumProfile:          return ShotType::kPlayerProfile;
+			case ShotType::kLowProfile:             return ShotType::kPlayerProfile;
+			case ShotType::kOverhead:               return ShotType::kPlayerOverhead;
+			case ShotType::kOverPlayerShoulderLow:  return ShotType::kOverNpcShoulderLow;
+			case ShotType::kOverPlayerShoulderHigh: return ShotType::kOverNpcShoulderHigh;
+			case ShotType::kOverPlayerShoulderWide: return ShotType::kOverNpcShoulderWide;
+			default:                                return a_type;
+			}
+		}
+
+		[[nodiscard]] bool IsSnStyle(int a_value)
+		{
+			return std::find(kSnStyles.begin(), kSnStyles.end(), a_value) != kSnStyles.end();
+		}
+
+		[[nodiscard]] ShotType SnStyle()
+		{
+			return IsSnStyle(snSettings.lockedShot) ? static_cast<ShotType>(snSettings.lockedShot) : ShotType::kCloseUp;
+		}
+
+		// The shot a locked style (or an F9 preview) wants on screen now, or nothing
+		// when the usual rotation should choose. a_wantNpc: the first slot has the
+		// floor. The second slot gets the mirrored style, unless it's the player,
+		// whose turn keeps its usual coverage.
+		[[nodiscard]] std::optional<ShotType> SnLockTarget(bool a_wantNpc)
+		{
+			// Keep Subject Visible picks its own shots by what can be seen; the style
+			// doesn't override that.
+			if (!staging || !snScene || framing != Framing::kAuto || protectSubject ||
+				!(snSettings.lockShot || snPreview)) {
+				return std::nullopt;
+			}
+			const auto style = SnStyle();
+			if (a_wantNpc) {
+				return Drawable(style) ? std::optional<ShotType>{ style } : std::nullopt;
+			}
+			auto  second = counterpart.get();
+			auto* player = static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton());
+			if (!second || second.get() == player) {
+				return std::nullopt;
+			}
+			const auto mirrored = MirrorShot(style);
+			return Drawable(mirrored) ? std::optional<ShotType>{ mirrored } : std::nullopt;
+		}
+
+		// Start filming a SkyrimNet conversation on its first line.
+		bool StartSkyrimNetScene(RE::Actor* a_speaker, RE::Actor* a_listener, std::uint32_t a_words)
+		{
+			auto*      player = static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton());
+			const bool fromPlayer = a_speaker == player;
+
+			// The player is only ever the second slot.
+			RE::Actor* first = fromPlayer ? a_listener : a_speaker;
+			RE::Actor* second = fromPlayer ? player : (a_listener ? a_listener : player);
+			if (!first || first == player || !second || first == second) {
+				return false;
+			}
+
+			sceneMode = true;
+			snScene = true;
+			snPreview = false;
+			sceneForm = 0;
+			counterpart = second->GetHandle();
+			sceneAutomatic = false;
+			sceneKey = Dialogue::PairKey(first->GetFormID(), second->GetFormID());
+			sceneSpeakerIsA = !fromPlayer;
+			sceneLineAt = Clock::now();
+			sceneLineSeconds = 0.0f;
+			sceneTalkSeen = false;
+			sceneWaitExempt = false;
+			sceneAheadReported = 0;
+			sceneQuietSince = Clock::now();
+
+			Log::Info(Log::Category::kCamera, "SkyrimNet: filming {} and {} ({} speaking)."sv,
+				NameOf(first), NameOf(second), NameOf(a_speaker));
+
+			Director::Open(first);
+
+			if (!staging) {
+				sceneMode = false;
+				snScene = false;
+				sceneForm = 0;
+				counterpart = {};
+				Log::Info(Log::Category::kCamera, "SkyrimNet: the camera was not available; this line isn't filmed."sv);
+				return false;
+			}
+			ApplySceneCue(sceneSpeakerIsA, a_words, 50);
+			return true;
+		}
+
+		// A SkyrimNet line in a conversation already being filmed: the pair follows
+		// whoever SkyrimNet says is talking to whom.
+		void SkyrimNetLine(RE::Actor* a_speaker, RE::Actor* a_listener, std::uint32_t a_words)
+		{
+			auto* player = static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton());
+			bool  fromFirst = true;
+
+			if (a_speaker == player) {
+				// Pair()'s rules can put a speaker in the first slot, which must never be the
+				// player, so the player's lines are paired here.
+				auto       current = subject.get();
+				RE::Actor* npc = a_listener && a_listener != player ? a_listener : current.get();
+				if (!npc) {
+					return;
+				}
+				if (current.get() != npc) {
+					subject = npc->GetHandle();
+					ResetSlot(true);
+				}
+				if (counterpart.get().get() != player) {
+					counterpart = player->GetHandle();
+					ResetSlot(false);
+				}
+				fromFirst = false;
+				Log::Info(Log::Category::kContinuity, "SkyrimNet: you speaking to {}."sv, NameOf(npc));
+			} else {
+				fromFirst = Pair(a_speaker, a_listener);
+			}
+
+			auto first = subject.get();
+			auto second = counterpart.get();
+			if (first && second) {
+				sceneKey = Dialogue::PairKey(first->GetFormID(), second->GetFormID());
+			}
+			ApplySceneCue(fromFirst, a_words, 50);
+		}
+
+		// One SkyrimNet line whose time has come.
+		void ApplySkyrimNetLine(const SnLine& a_line, SnGate::Why a_why)
+		{
+			auto* player = static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton());
+			auto* speaker = SnActor(a_line.speaker);
+			if (!player || !speaker || !Present(speaker)) {
+				Log::Info(Log::Category::kDialogue, "SkyrimNet: [{:08X}] isn't loaded here; line not filmed."sv,
+					a_line.speaker);
+				return;
+			}
+			const bool fromPlayer = speaker == player;
+
+			if (a_why == SnGate::Why::kUnheard && snUnheardReported.Take()) {
+				Log::Info(Log::Category::kDialogue,
+					"SkyrimNet: no voice was heard for {}'s line within {:.1f}s, and none has been yet; "
+					"cutting on the text instead. If this repeats, voices aren't visible to the camera "
+					"and iVoiceWait=0 avoids the wait."sv,
+					NameOf(speaker), static_cast<float>(snSettings.voiceWait) / 100.0f);
+			}
+
+			// Out of range: SkyrimNet hears further than a camera should reach.
+			const float range = static_cast<float>(std::clamp(snSettings.range, 300, 6000));
+			if (!fromPlayer && Distance(player->GetPosition(), speaker->GetPosition()) > range) {
+				Log::Info(Log::Category::kDialogue, "SkyrimNet: {} is too far away to film ({:.0f} units)."sv,
+					NameOf(speaker), Distance(player->GetPosition(), speaker->GetPosition()));
+				return;
+			}
+
+			// Who it's said to: SkyrimNet's target, else who the speaker faces.
+			RE::NiPointer<RE::Actor> found{};
+			RE::Actor*               listener = SnActor(a_line.target);
+			if (listener && (listener == speaker || !Present(listener) ||
+								Distance(speaker->GetPosition(), listener->GetPosition()) > kAddresseeReach * 2.0f)) {
+				listener = nullptr;
+			}
+			if (!listener) {
+				found = Addressee(speaker);
+				listener = found.get();
+			}
+
+			const auto words = WordCount(a_line.text.c_str());
+
+			if (staging) {
+				if (!sceneMode) {
+					Log::Info(Log::Category::kDialogue,
+						"SkyrimNet: line from {} not filmed; you are in a conversation of your own."sv, NameOf(speaker));
+					return;
+				}
+				if (!snScene) {
+					// A scene the player asked for with the film key stays theirs.
+					if (!sceneAutomatic) {
+						Log::Info(Log::Category::kDialogue,
+							"SkyrimNet: line from {} not filmed; you are filming another conversation by key."sv,
+							NameOf(speaker));
+						return;
+					}
+					snScene = true;
+					sceneForm = 0;
+					Log::Info(Log::Category::kCamera,
+						"SkyrimNet: taking over the conversation being filmed; SkyrimNet now says who is talking to whom."sv);
+				}
+				SkyrimNetLine(speaker, listener, words);
+				return;
+			}
+
+			if (const auto why = SnBlocked(); !why.empty()) {
+				Log::Info(Log::Category::kDialogue, "SkyrimNet: line from {} not filmed: {}."sv, NameOf(speaker), why);
+				return;
+			}
+			if (fromPlayer && !listener) {
+				Log::Info(Log::Category::kDialogue,
+					"SkyrimNet: your line has nobody to film you talking to; not filmed."sv);
+				return;
+			}
+			static_cast<void>(StartSkyrimNetScene(speaker, listener, words));
+		}
+
+		void ToggleSkyrimNet()
+		{
+			snSettings.on = !snSettings.on;
+			Config::SetBool("SkyrimNet", "bCinematic", snSettings.on);
+			Compat::SkyrimNet::SetAccepting(snSettings.on);
+
+			if (!snSettings.on) {
+				snGate.Clear();
+				Compat::SkyrimNet::Clear();
+				if (staging && snScene) {
+					Log::Info(Log::Category::kCamera, "Stopped filming: SkyrimNet cinematic mode switched off."sv);
+					Director::Close();
+				}
+				Log::Info(Log::Category::kCamera, "SkyrimNet cinematic mode OFF."sv);
+				Notify("SkyrimNet cinematic: OFF");
+				return;
+			}
+
+			if (!Compat::SkyrimNet::Listening()) {
+				Log::Warn(Log::Category::kCamera,
+					"SkyrimNet cinematic mode ON, but SkyrimNet isn't connected (not installed, or older than API v5)."sv);
+				Notify("SkyrimNet cinematic: ON, but SkyrimNet was not found.");
+				return;
+			}
+			Log::Info(Log::Category::kCamera, "SkyrimNet cinematic mode ON; waiting for SkyrimNet dialogue."sv);
+			Notify("SkyrimNet cinematic: ON");
+		}
+
+		// F9: the next shot style that's switched on, shown at once if filming.
+		void CycleSkyrimNetStyle()
+		{
+			const auto current = std::find(kSnStyles.begin(), kSnStyles.end(), static_cast<std::uint8_t>(SnStyle()));
+			const auto start = current == kSnStyles.end() ? std::size_t{ 0 } :
+			                                                static_cast<std::size_t>(current - kSnStyles.begin());
+
+			std::optional<ShotType> next{};
+			for (std::size_t step = 1; step <= kSnStyles.size(); ++step) {
+				const auto candidate = static_cast<ShotType>(kSnStyles[(start + step) % kSnStyles.size()]);
+				if (Drawable(candidate)) {
+					next = candidate;
+					break;
+				}
+			}
+			if (!next) {
+				Notify("SkyrimNet: no NPC angles are switched on (Shots page).");
+				return;
+			}
+
+			snSettings.lockedShot = static_cast<int>(*next);
+			Config::SetInt("SkyrimNet", "iLockedShot", snSettings.lockedShot);
+
+			const auto name = Name(*next);
+			const std::string note = fmt::format("SkyrimNet shot: {}{}", name,
+				snSettings.lockShot ? " (locked)"sv : ""sv);
+			Notify(note.c_str());
+			Log::Info(Log::Category::kContinuity, "SkyrimNet shot style: {}{}."sv, name,
+				snSettings.lockShot ? ", locked"sv : ""sv);
+
+			if (staging && snScene) {
+				snPreview = true;
+				forcedCut = true;
+				forcedWhy = "SkyrimNet shot style"sv;
+				cutByKey = true;
+			}
+		}
+
+		// F10: lock or unlock the style.
+		void ToggleSkyrimNetLock()
+		{
+			snSettings.lockShot = !snSettings.lockShot;
+			Config::SetBool("SkyrimNet", "bLockShot", snSettings.lockShot);
+
+			const auto name = Name(SnStyle());
+			const std::string note = snSettings.lockShot ?
+				fmt::format("SkyrimNet shot locked: {}", name) :
+				std::string{ "SkyrimNet shot unlocked" };
+			Notify(note.c_str());
+			Log::Info(Log::Category::kContinuity, "SkyrimNet shot style {} {}."sv, name,
+				snSettings.lockShot ? "locked"sv : "unlocked"sv);
+
+			if (staging && snScene && snSettings.lockShot) {
+				forcedCut = true;
+				forcedWhy = "SkyrimNet shot style"sv;
+				cutByKey = true;
+			}
+		}
+
+		// Every frame, staged or not: keys, SkyrimNet's queue and the voice gate.
+		void TickSkyrimNet(float a_delta)
+		{
+			if (requestSkyrimNet.exchange(false, std::memory_order_relaxed)) {
+				ToggleSkyrimNet();
+			}
+			if (requestSnStyle.exchange(false, std::memory_order_relaxed)) {
+				CycleSkyrimNetStyle();
+			}
+			if (requestSnLock.exchange(false, std::memory_order_relaxed)) {
+				ToggleSkyrimNetLock();
+			}
+
+			if (!snSettings.on) {
+				if (!snGate.Empty()) {
+					snGate.Clear();
+				}
+				return;
+			}
+			if (!Compat::SkyrimNet::Listening()) {
+				if (snNotListeningReported.Take()) {
+					Log::Info(Log::Category::kCamera,
+						"SkyrimNet cinematic mode is on, but SkyrimNet isn't connected; nothing to film."sv);
+				}
+				return;
+			}
+
+			for (auto& line : Compat::SkyrimNet::Drain()) {
+				const auto speaker = line.speaker;
+				const bool player = Compat::SkyrimNetEvent::IsPlayer(line.kind);
+				snGate.Push(std::move(line), speaker, player, SnAudible(speaker));
+			}
+
+			const SnGate::Waits waits{
+				static_cast<float>(std::clamp(snSettings.voiceWait, 0, 3000)) / 100.0f, kSnPlayerWait
+			};
+			auto result = snGate.Next(std::clamp(a_delta, 0.0f, 0.25f), waits,
+				[](std::uint32_t a_formId) { return SnAudible(a_formId); });
+			if (result.dropped > 0) {
+				Log::Info(Log::Category::kDialogue,
+					"SkyrimNet: {} line(s) never heard within the wait; skipped."sv, result.dropped);
+			}
+			if (result.line) {
+				ApplySkyrimNetLine(*result.line, result.why);
+			}
+		}
+
 		// Which menu the bars go under: the one whose subtitle is in them.
 		[[nodiscard]] Render::Letterbox::Beneath BarsBeneath()
 		{
@@ -3184,6 +3737,12 @@ namespace SD::Camera
 		{
 			Render::Letterbox::SetBeneath(BarsBeneath());
 			if (!subtitlesInBar) {
+				// A SkyrimNet conversation can nudge the HUD subtitle instead; Close() puts
+				// it back.
+				if (snScene && snSettings.subtitleOffset != 0) {
+					Scene::Subtitles::Lift(static_cast<float>(std::clamp(snSettings.subtitleOffset, -400, 400)));
+					return;
+				}
 				Scene::Subtitles::Release();
 				return;
 			}
@@ -5809,7 +6368,12 @@ namespace SD::Camera
 				std::span<const ShotType>{ kOpeners } :
 				std::span<const ShotType>{ kPlayerOpeners };
 
-			const auto opening = WeightedPick(pool, Drawable);
+			auto opening = WeightedPick(pool, Drawable);
+
+			// A SkyrimNet conversation under a locked style opens on it.
+			if (const auto locked = SnLockTarget(npcSpeaking)) {
+				opening = locked;
+			}
 			const auto opener = (opening ? opening : Canonical()).value_or(ShotType::kCount);
 
 			currentShot = opener;
@@ -5892,6 +6456,70 @@ namespace SD::Camera
 	void Director::LoadSettings()
 	{
 		ReadTuning();
+
+		// SkyrimNet's settings. Not part of Tunables: presets and the reset button
+		// leave them alone, and the menu and the keys change them live.
+		SkyrimNetTunables read{};
+		read.on = Config::Bool("SkyrimNet", "bCinematic", false);
+		read.lockShot = Config::Bool("SkyrimNet", "bLockShot", false);
+		read.lockedShot = Config::Int("SkyrimNet", "iLockedShot", static_cast<int>(ShotType::kCloseUp));
+		read.voiceWait = std::clamp(Config::Int("SkyrimNet", "iVoiceWait", 800), 0, 3000);
+		read.quietRelease = std::clamp(Config::Int("SkyrimNet", "iQuietRelease", 1500), 0, 12000);
+		read.releaseOnMove = Config::Bool("SkyrimNet", "bReleaseOnMove", true);
+		read.range = std::clamp(Config::Int("SkyrimNet", "iRange", 2000), 300, 6000);
+		read.subtitleOffset = std::clamp(Config::Int("SkyrimNet", "iSubtitleYOffset", -30), -400, 400);
+		if (!IsSnStyle(read.lockedShot)) {
+			read.lockedShot = static_cast<int>(ShotType::kCloseUp);
+		}
+		snSettings = read;
+		Compat::SkyrimNet::SetAccepting(snSettings.on);
+	}
+
+	SkyrimNetTunables Director::GetSkyrimNet()
+	{
+		return snSettings;
+	}
+
+	void Director::ApplySkyrimNet(const SkyrimNetTunables& a_tunables)
+	{
+		// `on` belongs to RequestSkyrimNet, which hands the camera back on the tick.
+		const bool on = snSettings.on;
+		snSettings = a_tunables;
+		snSettings.on = on;
+		if (!IsSnStyle(snSettings.lockedShot)) {
+			snSettings.lockedShot = static_cast<int>(ShotType::kCloseUp);
+		}
+	}
+
+	void Director::RequestSkyrimNet() noexcept
+	{
+		requestSkyrimNet.store(true, std::memory_order_relaxed);
+	}
+
+	void Director::RequestSkyrimNetStyle() noexcept
+	{
+		requestSnStyle.store(true, std::memory_order_relaxed);
+	}
+
+	void Director::RequestSkyrimNetLock() noexcept
+	{
+		requestSnLock.store(true, std::memory_order_relaxed);
+	}
+
+	bool Director::FilmingSkyrimNet() noexcept
+	{
+		return staging && snScene;
+	}
+
+	void Director::ForgetSkyrimNetLines()
+	{
+		snGate.Clear();
+		Compat::SkyrimNet::Clear();
+	}
+
+	std::span<const std::uint8_t> Director::SkyrimNetStyles() noexcept
+	{
+		return std::span<const std::uint8_t>{ kSnStyles };
 	}
 
 	Tunables Director::GetTunables()
@@ -6058,6 +6686,11 @@ namespace SD::Camera
 		sceneAutomatic = false;
 		sceneWaitExempt = false;
 		sceneAheadReported = 0;
+
+		// The SkyrimNet mode itself stays on; its next line can stage again.
+		snScene = false;
+		snPreview = false;
+		snFailed = false;
 
 		// Cleared rather than left at the last value: a suspend closes and a resume
 		// reopens the same conversation (same serial), and Open() mustn't mistake that
@@ -6471,6 +7104,10 @@ namespace SD::Camera
 			}
 		}
 
+		// SkyrimNet: its keys, its queue and the voice gate. Before the branch below,
+		// since a line can start filming on an unstaged frame.
+		TickSkyrimNet(a_delta);
+
 		// Sample the player's own camera while nothing is staged. The finer checks are
 		// in SampleCameraRest.
 		if (!staging) {
@@ -6686,7 +7323,16 @@ namespace SD::Camera
 		// same way: no clock, no line count and no coverage. It ends itself on a line
 		// (TwoShotOnLine), and anything that has to move the camera still can.
 		TrackTwoShot();
-		bool twoShotDue = sceneMode && twoShot.wanted && !TwoShotHolding();
+
+		// SkyrimNet: a locked shot style, or an F9 preview, replaces the rotation. While
+		// it's on screen nothing but a key, a new pair or an unplaceable shot moves the
+		// camera; when the floor changes hands it cuts to the style (mirrored for a
+		// second NPC). See SnLockTarget.
+		const auto snTarget = SnLockTarget(SubjectIsNpc());
+		const bool snLocked = snTarget.has_value();
+		const bool snWrong = snLocked && currentShot != *snTarget && !(snFailed && snFailedCue == cueCount);
+
+		bool twoShotDue = sceneMode && twoShot.wanted && !TwoShotHolding() && !snLocked;
 		if (twoShotDue && IsTwoShot(currentShot) && Drawable(currentShot)) {
 			// Already on one; hold it from here.
 			StartTwoShotHold(true);
@@ -6694,13 +7340,13 @@ namespace SD::Camera
 		}
 		const bool twoShotHolding = sceneMode && TwoShotHolding();
 
-		const bool stale = !beatHolding && !twoShotHolding && timedAllowed && held >= maxShotSeconds;
+		const bool stale = !snLocked && !beatHolding && !twoShotHolding && timedAllowed && held >= maxShotSeconds;
 
 		// Per Line Angle Change: hold until this many eligible lines have gone by. A
 		// turn change doesn't count as a reason on its own (otherwise every answer in
 		// a back-and-forth would cut and the cadence setting would do nothing); it
 		// only selects the shorter floor below.
-		const bool motivated = !beatHolding && !twoShotHolding && perLineAngleChange && cueSinceCut &&
+		const bool motivated = !snLocked && !beatHolding && !twoShotHolding && perLineAngleChange && cueSinceCut &&
 			linesSinceCut >= cutEveryTarget;
 
 		// Hold the player through the start of the reply, so the choice has a moment
@@ -6759,11 +7405,11 @@ namespace SD::Camera
 			shotHold.cutWhenSettled && SecondsSince(shotHold.settleFrom) >= kPostureSettle && held >= kWalkerCutFloor;
 		const bool heldCut = pairCut || settleCut;
 
-		const float floor = (turnSinceCut || wrongSubject || beatDue || twoShotDue) ? minTurnSeconds : minShotSeconds;
+		const float floor = (turnSinceCut || wrongSubject || snWrong || beatDue || twoShotDue) ? minTurnSeconds : minShotSeconds;
 
 		Pose smartFrame{};
 		if (protectSubject) {
-			const bool ordinaryCut = (motivated || stale || wrongSubject || forceNow || beatDue || walkerCut || heldCut) &&
+			const bool ordinaryCut = (motivated || stale || wrongSubject || snWrong || forceNow || beatDue || walkerCut || heldCut) &&
 				(held >= floor || forceNow || walkerCut || heldCut) && (!inPlayerBeat || forceNow) &&
 				(!HoldingOpenShot() || forceNow);
 			const auto result = ProtectedFrame(subjects, ordinaryCut);
@@ -6783,7 +7429,7 @@ namespace SD::Camera
 		}
 
 		// A cut needs both a reason and enough time on the current shot.
-		const bool cutReason = motivated || stale || wrongSubject || forceNow || beatDue || walkerCut || heldCut;
+		const bool cutReason = motivated || stale || wrongSubject || snWrong || forceNow || beatDue || walkerCut || heldCut;
 		if (!protectSubject && (cutReason || twoShotDue) &&
 			(held >= floor || forceNow || walkerCut || heldCut) && (!inPlayerBeat || forceNow)) {
 			// Chosen only when a cut is actually happening, not every frame.
@@ -6808,7 +7454,26 @@ namespace SD::Camera
 						"Two-shot: nowhere here frames both of them well enough to hold; cutting as usual."sv);
 				}
 			}
-			const bool usualDraw = !twoShotCut && cutReason;
+			// The locked style takes the cut if it places here at all; otherwise the cut
+			// goes ahead as usual and the style is tried again at the next one.
+			bool snCut = false;
+			if (!twoShotCut && snLocked && cutReason) {
+				const float quality = Placement(*snTarget, subjects, cache);
+				if (quality >= 0.0f) {
+					next = *snTarget;
+					bestQuality = quality;
+					found = true;
+					snCut = true;
+				} else {
+					snPreview = false;
+					snFailed = true;
+					snFailedCue = cueCount;
+					Log::Info(Log::Category::kContinuity,
+						"SkyrimNet shot style {} doesn't place here; choosing as usual until the next line."sv,
+						Name(*snTarget));
+				}
+			}
+			const bool usualDraw = !twoShotCut && !snCut && cutReason;
 
 			for (int attempt = 0; usualDraw && attempt < 4; ++attempt) {
 				const auto choice = Choose();
@@ -6938,6 +7603,7 @@ namespace SD::Camera
 					// Reasons in the same order as the test above, so the log names the one that
 					// actually fired.
 					twoShotCut  ? "two-shot"sv :
+					snCut       ? "SkyrimNet shot style"sv :
 					forceNow    ? forcedLabel :
 						pairCut      ? "new pair"sv :
 						settleCut    ? "they changed posture"sv :
@@ -6955,6 +7621,11 @@ namespace SD::Camera
 
 				if (twoShotCut) {
 					StartTwoShotHold(false);
+				}
+
+				// A preview is one cut; a lock keeps asking.
+				if (snCut) {
+					snPreview = false;
 				}
 
 				// The beat's shot pushes in for the length of the answer and keeps that move

@@ -4,6 +4,7 @@
 #include "SD/Camera/Presets.h"
 #include "SD/Camera/Situational.h"
 #include "SD/Camera/Shot.h"
+#include "SD/Compat/SkyrimNet.h"
 #include "SD/Core/Config.h"
 #include "SD/Core/Hotkeys.h"
 #include "SD/Core/Logging.h"
@@ -986,6 +987,99 @@ namespace SD::Menu
 			Im::PopID();
 		}
 
+		// ---- SkyrimNet ---------------------------------------------------------
+
+		void __stdcall RenderSkyrimNet()
+		{
+			const Compact compact;
+
+			auto sn = Camera::Director::GetSkyrimNet();
+			bool changed = false;
+
+			PageHeader(kIconLine, "SKYRIMNET", "Film SkyrimNet conversations");
+
+			if (Compat::SkyrimNet::Listening()) {
+				Icon(kIconCheck, kGreen);
+				Im::Text("SkyrimNet connected (API v%d).", Compat::SkyrimNet::ApiVersion());
+			} else if (Compat::SkyrimNet::Installed()) {
+				Warning("SkyrimNet is installed but too old for this (needs API v5, which added dialogue events). Update SkyrimNet.");
+			} else {
+				Warning("SkyrimNet isn't installed. Nothing here does anything without it.");
+			}
+			Im::Spacing();
+
+			if (BeginRows("skyrimNetGrid")) {
+				// Switched through the same request as the key, so the camera is handed back
+				// on the tick when it goes off.
+				Row("Cinematic Mode", false);
+				bool on = sn.on;
+				Im::PushStyleColor(kColCheck, kGreen);
+				if (Im::Checkbox("###bCinematic", &on)) {
+					Camera::Director::RequestSkyrimNet();
+				}
+				Im::PopStyleColor();
+				Help("On, every SkyrimNet line is filmed: the camera cuts to whoever is speaking, paired with "
+				     "whoever they're talking to, you included. Nothing happens until someone speaks. "
+				     "The SkyrimNet Cinematic Toggle key does the same.");
+
+				changed |= ToggleRow("Lock Shot Style", sn.lockShot, "SkyrimNet", "bLockShot",
+					"Every NPC speaker gets the shot style below instead of the usual rotation. "
+					"In a conversation between two NPCs the second one gets the matching reverse. "
+					"Your own lines keep the usual coverage.");
+
+				const auto styles = Camera::Director::SkyrimNetStyles();
+				std::vector<std::string> names;
+				names.reserve(styles.size());
+				int choice = 0;
+				for (std::size_t i = 0; i < styles.size(); ++i) {
+					const auto name = Camera::Name(static_cast<Camera::ShotType>(styles[i]));
+					names.emplace_back(name);
+					if (styles[i] == sn.lockedShot) {
+						choice = static_cast<int>(i);
+					}
+				}
+				const int before = choice;
+				ChoiceRow("Shot Style", "###iLockedShot", choice, names);
+				if (choice != before && choice >= 0 && static_cast<std::size_t>(choice) < styles.size()) {
+					sn.lockedShot = styles[static_cast<std::size_t>(choice)];
+					Config::SetInt("SkyrimNet", "iLockedShot", sn.lockedShot);
+					changed = true;
+				}
+
+				changed |= SecondsRow("Wait For The Voice", sn.voiceWait, 0, 3000, "SkyrimNet", "iVoiceWait",
+					"SkyrimNet reports a line before its voice is ready. The camera waits up to this long for the "
+					"speaker to be heard before cutting to them. 0 cuts as soon as the line is written.");
+				changed |= SecondsRow("Let Go After Silence", sn.quietRelease, 0, 12000, "SkyrimNet", "iQuietRelease",
+					"How long nobody speaks before the camera is handed back. The next line takes it again. "
+					"0 keeps it until the mode is switched off.");
+				changed |= ToggleRow("Moving Hands It Back", sn.releaseOnMove, "SkyrimNet", "bReleaseOnMove",
+					"Moving hands the camera back, and nothing starts filming while you move.");
+				changed |= SliderRow("Range", sn.range, 300, 6000, "SkyrimNet", "iRange", "%d units",
+					"How far from you a speaker can be and still be filmed.");
+				changed |= SliderRow("Subtitle Offset", sn.subtitleOffset, -400, 400, "SkyrimNet", "iSubtitleYOffset", "%d",
+					"Moves the subtitle while a SkyrimNet conversation is filmed. Negative is up. "
+					"Not used while Subtitles In The Black Bar is on.");
+				EndRows();
+			}
+
+			if (changed) {
+				Camera::Director::ApplySkyrimNet(sn);
+			}
+
+			Im::Separator();
+			Im::Spacing();
+			if (Camera::Director::FilmingSkyrimNet()) {
+				Icon(kIconCheck, kGreen);
+				Im::Text("Filming a SkyrimNet conversation.");
+			} else if (sn.on) {
+				Note("On. Waiting for SkyrimNet dialogue.");
+			} else {
+				Note("Off.");
+			}
+			Note("Your own conversations through the dialogue menu are filmed as usual and take priority. "
+			     "Shot style keys: SkyrimNet Shot Style cycles and previews, SkyrimNet Lock Shot Style locks it (Keys page).");
+		}
+
 		// The framework's input route. While this menu is open the framework takes
 		// input to drive ImGui, so the game's own sink may not see the binding press.
 		// Returns false: this observes and doesn't claim the press. OfferKey is
@@ -1021,6 +1115,9 @@ namespace SD::Menu
 				KeyRow("Next Angle", Action::kNextAngle);
 				KeyRow("Who To Look At", Action::kFraming);
 				KeyRow("Film Their Conversation", Action::kFilmScene);
+				KeyRow("SkyrimNet Cinematic Toggle", Action::kSkyrimNet);
+				KeyRow("SkyrimNet Shot Style", Action::kSkyrimNetStyle);
+				KeyRow("SkyrimNet Lock Shot Style", Action::kSkyrimNetLock);
 				EndRows();
 			}
 
@@ -1029,6 +1126,9 @@ namespace SD::Menu
 
 			if (!Camera::Director::Staging()) {
 				Note("Not in a conversation.");
+			} else if (Camera::Director::FilmingSkyrimNet()) {
+				Icon(kIconCheck, kGreen);
+				Im::Text("Filming a SkyrimNet conversation.");
 			} else if (Camera::Director::FilmingScene()) {
 				Icon(kIconCheck, kGreen);
 				Im::Text("Filming their conversation.");
@@ -2139,6 +2239,7 @@ namespace SD::Menu
 		MF::AddSectionItem("Screen", RenderScreen);
 		MF::AddSectionItem("Faces", RenderFaces);
 		MF::AddSectionItem("Keys", RenderControls);
+		MF::AddSectionItem("SkyrimNet", RenderSkyrimNet);
 		MF::AddSectionItem("About", RenderAbout);
 
 		Log::Info(Log::Category::kCore, "SKSE Menu Framework detected; settings panel registered."sv);
