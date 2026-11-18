@@ -161,7 +161,9 @@ namespace
 			Expect(frames >= 79 && frames <= 81, "after the eight second wait");
 		}
 
-		// Once voices are known to be audible, an unvoiced line is dropped instead.
+		// Even once a voice has been heard, a line whose voice isn't heard in time is
+		// still used after the wait, never dropped. (A slow reply after one heard
+		// voice used to switch the camera off for the rest of the session.)
 		{
 			Gate gate;
 			std::set<std::uint32_t> talking{ 100 };
@@ -170,14 +172,31 @@ namespace
 			static_cast<void>(gate.Next(kFrame, waits, audible));
 			Expect(gate.HeardEver(), "heard once");
 			talking.clear();
-			gate.Push(2, 200, false, false);
-			std::size_t dropped = 0;
-			for (int i = 0; i < 100; ++i) {
-				const auto result = gate.Next(kFrame, waits, audible);
-				Expect(!result.line, "never used");
-				dropped += result.dropped;
+			for (int round = 0; round < 3; ++round) {
+				gate.Push(2 + round, 200, false, false);
+				Gate::Result result{};
+				int frames = 0;
+				while (!result.line && frames < 200) {
+					result = gate.Next(kFrame, waits, audible);
+					Expect(result.dropped == 0, "nothing dropped");
+					++frames;
+				}
+				Expect(result.line && result.why == Gate::Why::kUnheard, "used after the wait, every time");
 			}
-			Expect(dropped == 1 && gate.Empty(), "dropped after the wait");
+			Expect(gate.Empty(), "all used");
+		}
+
+		// A short wait, as the player may set it: still used, just sooner.
+		{
+			Gate gate;
+			gate.Push(4, 100, false, false);
+			Gate::Result result{};
+			int frames = 0;
+			while (!result.line && frames < 50) {
+				result = gate.Next(kFrame, Gate::Waits{ 0.9f, 0.75f }, [](std::uint32_t) { return false; });
+				++frames;
+			}
+			Expect(result.line && frames >= 9 && frames <= 10, "a 0.9s wait uses the line after 0.9s");
 		}
 
 		// The player's lines go after a short beat, or at once if their voice starts.

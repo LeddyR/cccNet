@@ -24,10 +24,11 @@ namespace SD::Camera
 	//   they're dropped and it goes.
 	// - The player's own lines (typed or spoken into the microphone) don't wait
 	//   longer than playerWait: they were just entered.
-	// - A line nobody is heard saying within npcWait seconds is dropped, once any
-	//   line has ever been heard this way. Until then the voice may simply be
-	//   invisible to these checks (a voice played outside the actor), and the line
-	//   is used anyway so the camera still works, just without waiting for audio.
+	// - A line nobody is heard saying within npcWait seconds is used anyway. Its
+	//   voice may still be generating, or play somewhere these checks can't see; a
+	//   cut that comes a little early is better than no cut at all. (Dropping such
+	//   lines once a voice had been heard made the camera stop for good after one
+	//   slow reply.)
 	//
 	// Pure and templated on the line type, so it can be tested without the game.
 	template <typename Line>
@@ -47,7 +48,7 @@ namespace SD::Camera
 			kStartedLater,   // a newer line's speaker started; older ones were dropped
 			kPlayerLine,     // the player's line, after its short wait
 			kNoWait,         // waiting is switched off
-			kUnheard,        // nobody was heard, and nothing ever has been; used anyway
+			kUnheard,        // nobody was heard within the wait; used anyway
 		};
 
 		struct Result
@@ -119,11 +120,6 @@ namespace SD::Camera
 			}
 
 			if (!head.player && head.age >= a_waits.npc) {
-				if (heardEver) {
-					waiting.pop_front();
-					++result.dropped;
-					return result;
-				}
 				return Take(0, Why::kUnheard, result);
 			}
 			return result;
@@ -138,8 +134,8 @@ namespace SD::Camera
 		[[nodiscard]] bool        Empty() const noexcept { return waiting.empty(); }
 		[[nodiscard]] std::size_t Size() const noexcept { return waiting.size(); }
 
-		// Whether any NPC line has been matched to an audible voice. Kept across
-		// Clear(): it describes the setup, not the conversation.
+		// Whether any NPC line has been matched to an audible voice, for the log.
+		// Kept across Clear(): it describes the setup, not the conversation.
 		[[nodiscard]] bool HeardEver() const noexcept { return heardEver; }
 
 	private:

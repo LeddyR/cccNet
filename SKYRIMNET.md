@@ -45,21 +45,25 @@ goes:
 - you to Aela
 
 You are always the second person of a pair, so the reverse shots onto you are
-the usual ones. Lines you type or speak into the microphone cut to you.
+the usual ones. Lines you type or speak into the microphone cut to you. When
+SkyrimNet doesn't say who your line is for, it's taken as said to whoever you
+were last talking with through SkyrimNet, if they're still nearby.
 
 SkyrimNet reports a line as soon as it is written, often seconds before its
 voice is ready. The camera waits for the speaker to actually be heard (a voice
 playing on them, or their subtitle showing) before cutting to them, so it
-doesn't cut to someone standing in silence while the last speaker finishes. A
-line nobody is heard saying is skipped. If no voice has ever been detected
-(for example if your voice setup plays sound in a way the camera can't see),
-lines are used after the wait anyway, and the log says so.
+doesn't cut to someone standing in silence while the last speaker finishes. If
+the voice isn't heard within the wait (**Wait For The Voice**, 8 seconds by
+default), the camera cuts anyway. A line is only skipped when someone after it
+has already started talking.
 
 The camera is handed back when:
 
 - nobody has spoken for a while (15 seconds by default; the next line takes it
   again),
-- you move (on by default; nothing starts filming while you move, either),
+- you walk (on by default; nothing starts filming while you walk, either). This
+  is measured from how fast you're actually going, so turning on the spot or
+  a stuck key after typing in SkyrimNet doesn't count,
 - combat starts, a menu takes the screen, or one of the two leaves,
 - you start a conversation of your own through the dialogue menu, which
   always takes priority,
@@ -121,8 +125,9 @@ Lines about this mode start with `SkyrimNet`:
 - `SkyrimNet dialogue: [speaker] -> [target]` for every line SkyrimNet sends.
 - `SkyrimNet: line from X not filmed: ...` says why a line didn't start the
   camera.
-- `no voice was heard ... cutting on the text instead` means voices aren't
-  visible to the camera. Set `iVoiceWait=0` to cut straight away.
+- `X's voice wasn't heard within Ns ... cutting anyway` means the reply's voice
+  took longer than Wait For The Voice. Raise it if cuts come before people
+  start talking; set `iVoiceWait=0` to cut as soon as the line is written.
 
 ## Building
 

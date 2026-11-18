@@ -154,8 +154,25 @@ namespace SD::Camera
 		// estimated length. SkyrimNet replies run long.
 		constexpr float kSnVoiceSlack = 15.0f;
 
-		Log::OnceFlag snUnheardReported;
 		Log::OnceFlag snNotListeningReported;
+
+		// Whether the player is actually walking, for the SkyrimNet mode: how fast
+		// they're really going, from where they are frame to frame. Movement input
+		// alone can stay latched after a menu (SkyrimNet's text box) took the key-up,
+		// which read as moving for minutes while standing still.
+		RE::NiPoint3 snLastPlayerPos{};
+		bool         snHavePlayerPos{ false };
+		float        snPlayerSpeed{ 0.0f };
+
+		// Units per second, smoothed, above which the player counts as moving. A
+		// sneaking walk is about 70.
+		constexpr float kSnMovingSpeed = 45.0f;
+
+		// The last NPC the player talked with through SkyrimNet, for the player's
+		// lines that name nobody.
+		RE::ActorHandle            snPartner{};
+		Clock::time_point          snPartnerAt{};
+		constexpr float            kSnPartnerMemory = 90.0f;
 
 		// The shot styles F9 cycles through: the NPC side of the shot table, in the
 		// order a player would want to try them.
@@ -2962,7 +2979,7 @@ namespace SD::Camera
 				a_why = "combat"sv;
 				return true;
 			}
-			if (snSettings.releaseOnMove && PlayerMoving()) {
+			if (snSettings.releaseOnMove && snPlayerSpeed > kSnMovingSpeed) {
 				a_why = "you moved"sv;
 				return true;
 			}
@@ -3331,7 +3348,7 @@ namespace SD::Camera
 			if (player->IsOnMount()) {
 				return "you are mounted"sv;
 			}
-			if (snSettings.releaseOnMove && PlayerMoving()) {
+			if (snSettings.releaseOnMove && snPlayerSpeed > kSnMovingSpeed) {
 				return "you are moving"sv;
 			}
 			return {};
@@ -3493,11 +3510,9 @@ namespace SD::Camera
 			}
 			const bool fromPlayer = speaker == player;
 
-			if (a_why == SnGate::Why::kUnheard && snUnheardReported.Take()) {
+			if (a_why == SnGate::Why::kUnheard) {
 				Log::Info(Log::Category::kDialogue,
-					"SkyrimNet: no voice was heard for {}'s line within {:.1f}s, and none has been yet; "
-					"cutting on the text instead. If this repeats, voices aren't visible to the camera "
-					"and iVoiceWait=0 avoids the wait."sv,
+					"SkyrimNet: {}'s voice wasn't heard within {:.1f}s (Wait For The Voice); cutting anyway."sv,
 					NameOf(speaker), static_cast<float>(snSettings.voiceWait) / 100.0f);
 			}
 
@@ -3519,6 +3534,28 @@ namespace SD::Camera
 			if (!listener) {
 				found = Addressee(speaker);
 				listener = found.get();
+			}
+
+			// The player's lines usually name nobody. Then they're taken to be for whoever
+			// they were last talking with through SkyrimNet, if that person is still near.
+			if (fromPlayer && !listener && SecondsSince(snPartnerAt) < kSnPartnerMemory) {
+				if (auto partner = snPartner.get(); partner && partner.get() != player && Present(partner.get()) &&
+					Distance(player->GetPosition(), partner->GetPosition()) < range) {
+					found = partner;
+					listener = found.get();
+					Log::Info(Log::Category::kDialogue,
+						"SkyrimNet: your line names nobody; taking it as said to {}, who you were last talking with."sv,
+						NameOf(listener));
+				}
+			}
+
+			// Remember who the player is talking with.
+			if (fromPlayer && listener) {
+				snPartner = listener->GetHandle();
+				snPartnerAt = Clock::now();
+			} else if (!fromPlayer && listener == player) {
+				snPartner = speaker->GetHandle();
+				snPartnerAt = Clock::now();
 			}
 
 			const auto words = WordCount(a_line.text.c_str());
@@ -3656,6 +3693,18 @@ namespace SD::Camera
 			}
 			if (requestSnLock.exchange(false, std::memory_order_relaxed)) {
 				ToggleSkyrimNetLock();
+			}
+
+			// How fast the player is really going, smoothed over about a quarter second.
+			if (auto* player = RE::PlayerCharacter::GetSingleton(); player && a_delta > 0.0f) {
+				const auto here = player->GetPosition();
+				if (snHavePlayerPos) {
+					const float step = std::min(a_delta, 0.25f);
+					const float speed = std::min(Distance(here, snLastPlayerPos) / step, 2000.0f);
+					snPlayerSpeed += (speed - snPlayerSpeed) * std::min(1.0f, step / 0.25f);
+				}
+				snLastPlayerPos = here;
+				snHavePlayerPos = true;
 			}
 
 			if (!snSettings.on) {
@@ -6515,6 +6564,9 @@ namespace SD::Camera
 	{
 		snGate.Clear();
 		Compat::SkyrimNet::Clear();
+		snHavePlayerPos = false;
+		snPlayerSpeed = 0.0f;
+		snPartner = {};
 	}
 
 	std::span<const std::uint8_t> Director::SkyrimNetStyles() noexcept
