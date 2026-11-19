@@ -165,8 +165,19 @@ namespace SD::Camera
 		float        snPlayerSpeed{ 0.0f };
 
 		// Units per second, smoothed, above which the player counts as moving. A
-		// sneaking walk is about 70.
+		// sneaking walk is about 70. Above kSnPushedSpeed they're moving whether or
+		// not a movement key is held (shoved, sliding, riding something).
 		constexpr float kSnMovingSpeed = 45.0f;
+		constexpr float kSnPushedSpeed = 150.0f;
+
+		// A SkyrimNet conversation a menu interrupted (SkyrimNet's own text box,
+		// the journal), to pick up again when the menu closes.
+		bool              snResumeArmed{ false };
+		RE::ActorHandle   snResumeFirst{};
+		RE::ActorHandle   snResumeSecond{};
+		bool              snResumeSpeakerIsA{ true };
+		Clock::time_point snResumeTakenAt{};
+		constexpr float   kSnResumeWithin = 120.0f;
 
 		// The last NPC the player talked with through SkyrimNet, for the player's
 		// lines that name nobody.
@@ -2958,6 +2969,22 @@ namespace SD::Camera
 			}
 		}
 
+		// Whether the player is walking, for the SkyrimNet mode: really going somewhere
+		// (measured speed), and either steering (a movement key) or going too fast to
+		// be standing. Sitting down and getting up move you too, and don't count.
+		[[nodiscard]] bool SnPlayerWalking()
+		{
+			if (snPlayerSpeed <= kSnMovingSpeed) {
+				return false;
+			}
+			auto*       player = RE::PlayerCharacter::GetSingleton();
+			const auto* state = player ? player->AsActorState() : nullptr;
+			if (state && state->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal) {
+				return false;
+			}
+			return PlayerMoving() || snPlayerSpeed > kSnPushedSpeed;
+		}
+
 		// Whether a filmed SkyrimNet conversation is over, and why. Its own rules: no
 		// game scene to follow, the player may be one of the two, and SkyrimNet's
 		// replies can take several seconds to arrive.
@@ -2979,7 +3006,9 @@ namespace SD::Camera
 				a_why = "combat"sv;
 				return true;
 			}
-			if (snSettings.releaseOnMove && snPlayerSpeed > kSnMovingSpeed) {
+			if (snSettings.releaseOnMove && SnPlayerWalking()) {
+				Log::Info(Log::Category::kCamera, "SkyrimNet: you're walking ({:.0f} units/s, movement key {})."sv,
+					snPlayerSpeed, PlayerMoving() ? "held"sv : "not held"sv);
 				a_why = "you moved"sv;
 				return true;
 			}
@@ -3328,8 +3357,9 @@ namespace SD::Camera
 			return actor && Present(actor) && (SoundPlaying(actor) || Dialogue::SceneWatch::Talking(actor));
 		}
 
-		// Why a SkyrimNet line can't start filming now, or empty if it can.
-		[[nodiscard]] std::string_view SnBlocked()
+		// Why a SkyrimNet line can't start filming now, or empty if it can. a_log:
+		// say how fast the player is going when that's the reason.
+		[[nodiscard]] std::string_view SnBlocked(bool a_log = true)
 		{
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			auto* ui = RE::UI::GetSingleton();
@@ -3348,7 +3378,11 @@ namespace SD::Camera
 			if (player->IsOnMount()) {
 				return "you are mounted"sv;
 			}
-			if (snSettings.releaseOnMove && snPlayerSpeed > kSnMovingSpeed) {
+			if (snSettings.releaseOnMove && SnPlayerWalking()) {
+				if (a_log) {
+					Log::Info(Log::Category::kDialogue, "SkyrimNet: you're walking ({:.0f} units/s, movement key {})."sv,
+						snPlayerSpeed, PlayerMoving() ? "held"sv : "not held"sv);
+				}
 				return "you are moving"sv;
 			}
 			return {};
@@ -3501,6 +3535,9 @@ namespace SD::Camera
 		// One SkyrimNet line whose time has come.
 		void ApplySkyrimNetLine(const SnLine& a_line, SnGate::Why a_why)
 		{
+			// A new line decides the pair itself; a pending resume would only repeat it.
+			snResumeArmed = false;
+
 			auto* player = static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton());
 			auto* speaker = SnActor(a_line.speaker);
 			if (!player || !speaker || !Present(speaker)) {
@@ -3604,6 +3641,7 @@ namespace SD::Camera
 			if (!snSettings.on) {
 				snGate.Clear();
 				Compat::SkyrimNet::Clear();
+				snResumeArmed = false;
 				if (staging && snScene) {
 					Log::Info(Log::Category::kCamera, "Stopped filming: SkyrimNet cinematic mode switched off."sv);
 					Director::Close();
@@ -3738,6 +3776,28 @@ namespace SD::Camera
 			}
 			if (result.line) {
 				ApplySkyrimNetLine(*result.line, result.why);
+			}
+
+			// A menu interrupted a SkyrimNet conversation and has closed again: pick it up
+			// where it was, once the screen has settled.
+			if (snResumeArmed && !staging) {
+				// Only straight after the menu closes: walking off and stopping a minute later
+				// shouldn't bring the camera back.
+				const bool released = screenReleasedAt > snResumeTakenAt;
+				if (SecondsSince(snResumeTakenAt) > kSnResumeWithin || (released && SecondsSince(screenReleasedAt) > 5.0f)) {
+					snResumeArmed = false;
+				} else if (released && SecondsSince(screenReleasedAt) > 0.3f && SnBlocked(false).empty()) {
+					snResumeArmed = false;
+					auto first = snResumeFirst.get();
+					auto second = snResumeSecond.get();
+					if (first && second && Present(first.get()) && Present(second.get())) {
+						Log::Info(Log::Category::kCamera, "SkyrimNet: the menu closed; back to {} and {}."sv,
+							NameOf(first.get()), NameOf(second.get()));
+						RE::Actor* speaker = snResumeSpeakerIsA ? first.get() : second.get();
+						RE::Actor* listener = snResumeSpeakerIsA ? second.get() : first.get();
+						static_cast<void>(StartSkyrimNetScene(speaker, listener, 0));
+					}
+				}
 			}
 		}
 
@@ -6567,6 +6627,7 @@ namespace SD::Camera
 		snHavePlayerPos = false;
 		snPlayerSpeed = 0.0f;
 		snPartner = {};
+		snResumeArmed = false;
 	}
 
 	std::span<const std::uint8_t> Director::SkyrimNetStyles() noexcept
@@ -6860,6 +6921,14 @@ namespace SD::Camera
 		// A scene isn't suspended; it just ends. Auto mode will pick it up again if
 		// the player stays put.
 		if (sceneMode) {
+			// A SkyrimNet conversation comes back when the menu closes (TickSkyrimNet).
+			if (snScene) {
+				snResumeFirst = subject;
+				snResumeSecond = counterpart;
+				snResumeSpeakerIsA = sceneSpeakerIsA;
+				snResumeTakenAt = Clock::now();
+				snResumeArmed = true;
+			}
 			Render::Letterbox::Retract();
 			Log::Info(Log::Category::kCamera, "Stopped filming: '{}' took the screen."sv, a_menu);
 			Close();

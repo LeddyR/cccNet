@@ -62,9 +62,12 @@ The camera is handed back when:
 - nobody has spoken for a while (15 seconds by default; the next line takes it
   again),
 - you walk (on by default; nothing starts filming while you walk, either). This
-  is measured from how fast you're actually going, so turning on the spot or
-  a stuck key after typing in SkyrimNet doesn't count,
-- combat starts, a menu takes the screen, or one of the two leaves,
+  is measured from how fast you're actually going, so turning on the spot, a
+  stuck key after typing in SkyrimNet, or sitting down and getting up doesn't
+  count,
+- combat starts, a menu takes the screen, or one of the two leaves. When the
+  menu was SkyrimNet's text box, the journal or similar, the conversation is
+  picked up again as soon as it closes,
 - you start a conversation of your own through the dialogue menu, which
   always takes priority,
 - you press F8.
