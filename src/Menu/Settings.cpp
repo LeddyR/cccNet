@@ -1059,6 +1059,13 @@ namespace SD::Menu
 				changed |= SliderRow("Subtitle Offset", sn.subtitleOffset, -400, 400, "SkyrimNet", "iSubtitleYOffset", "%d",
 					"Moves the subtitle while a SkyrimNet conversation is filmed. Negative is up. "
 					"Not used while Subtitles In The Black Bar is on.");
+				changed |= ToggleRow("Look At The Speaker", sn.lookAtSpeaker, "SkyrimNet", "bLookAtSpeaker",
+					"While someone speaks, the person they're talking to and the NPCs around them turn their heads "
+					"to the speaker, and the speaker looks at who they're talking to. Works whether or not the "
+					"camera is filming.");
+				changed |= SliderRow("Who Else Looks", sn.lookRange, 0, 2000, "SkyrimNet", "iLookRange", "%d units",
+					"NPCs this close to the speaker look at them too. 0: only the person spoken to. "
+					"About 400 covers a table.");
 				EndRows();
 			}
 

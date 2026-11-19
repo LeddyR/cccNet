@@ -41,6 +41,7 @@
 #include "SD/Scene/Performance.h"
 #include "SD/Scene/Presence.h"
 #include "SD/Scene/StopWork.h"
+#include "SD/Scene/SkyrimNetGaze.h"
 #include "SD/Scene/Subtitles.h"
 #include "SD/Scene/WatchCue.h"
 
@@ -3586,6 +3587,14 @@ namespace SD::Camera
 				}
 			}
 
+			// Heads turn to the speaker, filmed or not.
+			if (snSettings.lookAtSpeaker) {
+				const auto spoken = WordCount(a_line.text.c_str());
+				const float seconds = std::clamp(static_cast<float>(spoken) / 2.5f + 3.0f, 4.0f, 40.0f);
+				Scene::SkyrimNetGaze::Speak(speaker, listener, seconds,
+					static_cast<float>(std::clamp(snSettings.lookRange, 0, 2000)));
+			}
+
 			// Remember who the player is talking with.
 			if (fromPlayer && listener) {
 				snPartner = listener->GetHandle();
@@ -3642,6 +3651,7 @@ namespace SD::Camera
 				snGate.Clear();
 				Compat::SkyrimNet::Clear();
 				snResumeArmed = false;
+				Scene::SkyrimNetGaze::Release();
 				if (staging && snScene) {
 					Log::Info(Log::Category::kCamera, "Stopped filming: SkyrimNet cinematic mode switched off."sv);
 					Director::Close();
@@ -3757,6 +3767,13 @@ namespace SD::Camera
 						"SkyrimNet cinematic mode is on, but SkyrimNet isn't connected; nothing to film."sv);
 				}
 				return;
+			}
+
+			// Heads keep turning to whoever is talking.
+			if (snSettings.lookAtSpeaker) {
+				Scene::SkyrimNetGaze::Update(a_delta);
+			} else {
+				Scene::SkyrimNetGaze::Release();
 			}
 
 			for (auto& line : Compat::SkyrimNet::Drain()) {
@@ -6577,6 +6594,8 @@ namespace SD::Camera
 		read.releaseOnMove = Config::Bool("SkyrimNet", "bReleaseOnMove", true);
 		read.range = std::clamp(Config::Int("SkyrimNet", "iRange", 2000), 300, 6000);
 		read.subtitleOffset = std::clamp(Config::Int("SkyrimNet", "iSubtitleYOffset", -30), -400, 400);
+		read.lookAtSpeaker = Config::Bool("SkyrimNet", "bLookAtSpeaker", true);
+		read.lookRange = std::clamp(Config::Int("SkyrimNet", "iLookRange", 400), 0, 2000);
 		if (!IsSnStyle(read.lockedShot)) {
 			read.lockedShot = static_cast<int>(ShotType::kCloseUp);
 		}
@@ -6628,6 +6647,7 @@ namespace SD::Camera
 		snPlayerSpeed = 0.0f;
 		snPartner = {};
 		snResumeArmed = false;
+		Scene::SkyrimNetGaze::Release();
 	}
 
 	std::span<const std::uint8_t> Director::SkyrimNetStyles() noexcept

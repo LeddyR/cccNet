@@ -80,6 +80,23 @@ conversation you are filming with the Film Their Conversation key. A
 conversation that Film When You Stand Still started on its own is taken over,
 because SkyrimNet knows better who is talking to whom.
 
+## Heads turn to the speaker
+
+SkyrimNet's lines don't go through the game's own dialogue, so nobody turns to
+look at whoever is talking: the person spoken to keeps looking away until it's
+their turn, and everyone else at the table stares into space. With **Look At
+The Speaker** on (the default), while a SkyrimNet line is said:
+
+- the person it's said to looks at the speaker straight away,
+- every NPC within **Who Else Looks** of the speaker (400 units, about a table)
+  looks at them too,
+- the speaker looks at who they're talking to.
+
+Heads and eyes only: nobody gets up or turns their body, and your own head is
+never touched. It works whether or not the camera is filming, stops a few
+seconds after the line ends, and steps aside during your own dialogue-menu
+conversations.
+
 ## Locked shot style
 
 With the style locked (F10), every NPC speaker is filmed with the same
@@ -107,6 +124,8 @@ On the **SkyrimNet** page of the in-game settings, or in `SD.ini` under
 | `bReleaseOnMove` | 1 | Moving hands the camera back. |
 | `iRange` | 2000 | How far from you a speaker may be, in world units. |
 | `iSubtitleYOffset` | -30 | Moves the subtitle while filming. Negative is up. Not used with Subtitles In The Black Bar. |
+| `bLookAtSpeaker` | 1 | Heads turn to whoever is talking. |
+| `iLookRange` | 400 | NPCs this close to the speaker look too, in world units. 0: only the person spoken to. |
 
 ## Safety
 

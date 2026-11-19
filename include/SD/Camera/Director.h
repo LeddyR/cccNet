@@ -260,6 +260,13 @@ namespace SD::Camera
 		// subtitle movie's units; negative is up. Ignored while Subtitles In The
 		// Black Bar is on. iSubtitleYOffset.
 		int subtitleOffset{ -30 };
+
+		// While a SkyrimNet line is said, the person it's said to and NPCs within
+		// lookRange units of the speaker turn their heads to the speaker, and the
+		// speaker looks at who they're talking to. Works whether or not the camera
+		// is filming. bLookAtSpeaker, iLookRange (0: only the person spoken to).
+		bool lookAtSpeaker{ true };
+		int  lookRange{ 400 };
 	};
 
 	// Who the camera is on when the player overrides it with the hotkey. Not
