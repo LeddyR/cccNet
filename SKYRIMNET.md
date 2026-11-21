@@ -65,6 +65,9 @@ The camera is handed back when:
   is measured from how fast you're actually going, so turning on the spot, a
   stuck key after typing in SkyrimNet, or sitting down and getting up doesn't
   count,
+- you draw your weapon or a spell, or anyone hostile to you comes within 3000
+  units, fighting or not (both on by default; nothing starts filming then
+  either),
 - combat starts, a menu takes the screen, or one of the two leaves. When the
   menu was SkyrimNet's text box, the journal or similar, the conversation is
   picked up again as soon as it closes,
@@ -122,6 +125,9 @@ On the **SkyrimNet** page of the in-game settings, or in `SD.ini` under
 | `iVoiceWait` | 800 | How long a line waits for its voice, in hundredths of a second. 0 cuts as soon as the line is written. |
 | `iQuietRelease` | 1500 | Silence before the camera is handed back, in hundredths of a second. 0 never lets go. |
 | `bReleaseOnMove` | 1 | Moving hands the camera back. |
+| `bNotWithWeaponDrawn` | 1 | No filming with your weapon or spell drawn. |
+| `bNotNearHostiles` | 1 | No filming with anyone hostile nearby. |
+| `iHostileRange` | 3000 | How near counts as nearby, in world units. |
 | `iRange` | 2000 | How far from you a speaker may be, in world units. |
 | `iSubtitleYOffset` | -30 | Moves the subtitle while filming. Negative is up. Not used with Subtitles In The Black Bar. |
 | `bLookAtSpeaker` | 1 | Heads turn to whoever is talking. |

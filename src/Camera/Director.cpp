@@ -180,6 +180,12 @@ namespace SD::Camera
 		Clock::time_point snResumeTakenAt{};
 		constexpr float   kSnResumeWithin = 120.0f;
 
+		// Someone hostile near the player, for the SkyrimNet mode. Looked for a few
+		// times a second, not every frame.
+		Clock::time_point snHostileCheckedAt{};
+		RE::ActorHandle   snHostile{};
+		constexpr float   kSnHostileInterval = 0.25f;
+
 		// The last NPC the player talked with through SkyrimNet, for the player's
 		// lines that name nobody.
 		RE::ActorHandle            snPartner{};
@@ -2986,6 +2992,48 @@ namespace SD::Camera
 			return PlayerMoving() || snPlayerSpeed > kSnPushedSpeed;
 		}
 
+		// The player's weapon or spell is out.
+		[[nodiscard]] bool SnWeaponDrawn()
+		{
+			auto*       player = RE::PlayerCharacter::GetSingleton();
+			const auto* state = player ? player->AsActorState() : nullptr;
+			return state && state->IsWeaponDrawn();
+		}
+
+		// The nearest living actor hostile to the player within the setting's range,
+		// or null. Fighting or not: a bandit camp you're chatting next to counts.
+		[[nodiscard]] RE::NiPointer<RE::Actor> SnHostileNearby()
+		{
+			if (SecondsSince(snHostileCheckedAt) < kSnHostileInterval) {
+				return snHostile.get();
+			}
+			snHostileCheckedAt = Clock::now();
+			snHostile = {};
+
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			auto* lists = RE::ProcessLists::GetSingleton();
+			if (!player || !lists) {
+				return {};
+			}
+			const auto  here = player->GetPosition();
+			const float reach = static_cast<float>(std::clamp(snSettings.hostileRange, 500, 8000));
+			float       nearest = reach;
+			for (auto& handle : lists->highActorHandles) {
+				auto  actor = handle.get();
+				auto* raw = actor.get();
+				if (!raw || raw == player || !raw->Is3DLoaded() || raw->IsDead() || raw->IsDisabled()) {
+					continue;
+				}
+				const float distance = Distance(here, raw->GetPosition());
+				if (distance >= nearest || !raw->IsHostileToActor(player)) {
+					continue;
+				}
+				nearest = distance;
+				snHostile = raw->GetHandle();
+			}
+			return snHostile.get();
+		}
+
 		// Whether a filmed SkyrimNet conversation is over, and why. Its own rules: no
 		// game scene to follow, the player may be one of the two, and SkyrimNet's
 		// replies can take several seconds to arrive.
@@ -3006,6 +3054,18 @@ namespace SD::Camera
 			if (player->IsInCombat()) {
 				a_why = "combat"sv;
 				return true;
+			}
+			if (snSettings.notWithWeaponDrawn && SnWeaponDrawn()) {
+				a_why = "your weapon is drawn"sv;
+				return true;
+			}
+			if (snSettings.notNearHostiles) {
+				if (auto enemy = SnHostileNearby()) {
+					Log::Info(Log::Category::kCamera, "SkyrimNet: {} is hostile and {:.0f} units away."sv,
+						NameOf(enemy.get()), Distance(player->GetPosition(), enemy->GetPosition()));
+					a_why = "someone hostile is near"sv;
+					return true;
+				}
 			}
 			if (snSettings.releaseOnMove && SnPlayerWalking()) {
 				Log::Info(Log::Category::kCamera, "SkyrimNet: you're walking ({:.0f} units/s, movement key {})."sv,
@@ -3369,6 +3429,18 @@ namespace SD::Camera
 			}
 			if (player->IsInCombat()) {
 				return "combat"sv;
+			}
+			if (snSettings.notWithWeaponDrawn && SnWeaponDrawn()) {
+				return "your weapon is drawn"sv;
+			}
+			if (snSettings.notNearHostiles) {
+				if (auto enemy = SnHostileNearby()) {
+					if (a_log) {
+						Log::Info(Log::Category::kDialogue, "SkyrimNet: {} is hostile and {:.0f} units away."sv,
+							NameOf(enemy.get()), Distance(player->GetPosition(), enemy->GetPosition()));
+					}
+					return "someone hostile is near"sv;
+				}
 			}
 			if (ui->GameIsPaused() || Dialogue::MenuWatch::ScreenTaken() || suspendedForMenu) {
 				return "a menu has the screen"sv;
@@ -6596,6 +6668,9 @@ namespace SD::Camera
 		read.subtitleOffset = std::clamp(Config::Int("SkyrimNet", "iSubtitleYOffset", -30), -400, 400);
 		read.lookAtSpeaker = Config::Bool("SkyrimNet", "bLookAtSpeaker", true);
 		read.lookRange = std::clamp(Config::Int("SkyrimNet", "iLookRange", 400), 0, 2000);
+		read.notWithWeaponDrawn = Config::Bool("SkyrimNet", "bNotWithWeaponDrawn", true);
+		read.notNearHostiles = Config::Bool("SkyrimNet", "bNotNearHostiles", true);
+		read.hostileRange = std::clamp(Config::Int("SkyrimNet", "iHostileRange", 3000), 500, 8000);
 		if (!IsSnStyle(read.lockedShot)) {
 			read.lockedShot = static_cast<int>(ShotType::kCloseUp);
 		}

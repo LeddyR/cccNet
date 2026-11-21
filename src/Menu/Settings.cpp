@@ -1054,6 +1054,14 @@ namespace SD::Menu
 					"0 keeps it until the mode is switched off.");
 				changed |= ToggleRow("Moving Hands It Back", sn.releaseOnMove, "SkyrimNet", "bReleaseOnMove",
 					"Moving hands the camera back, and nothing starts filming while you move.");
+				changed |= ToggleRow("Not With Weapon Drawn", sn.notWithWeaponDrawn, "SkyrimNet", "bNotWithWeaponDrawn",
+					"Nothing is filmed while your weapon or spell is out, and drawing it hands the camera back.");
+				changed |= ToggleRow("Not Near Enemies", sn.notNearHostiles, "SkyrimNet", "bNotNearHostiles",
+					"Nothing is filmed while anyone hostile to you is nearby, fighting or not, and one coming "
+					"near hands the camera back.");
+				changed |= SliderRow("Enemy Distance", sn.hostileRange, 500, 8000, "SkyrimNet", "iHostileRange", "%d units",
+					"How close someone hostile has to be to count as nearby. 3000 is roughly a stone's throw "
+					"across a bandit camp.");
 				changed |= SliderRow("Range", sn.range, 300, 6000, "SkyrimNet", "iRange", "%d units",
 					"How far from you a speaker can be and still be filmed.");
 				changed |= SliderRow("Subtitle Offset", sn.subtitleOffset, -400, 400, "SkyrimNet", "iSubtitleYOffset", "%d",

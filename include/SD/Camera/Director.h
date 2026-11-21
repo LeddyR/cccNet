@@ -267,6 +267,14 @@ namespace SD::Camera
 		// is filming. bLookAtSpeaker, iLookRange (0: only the person spoken to).
 		bool lookAtSpeaker{ true };
 		int  lookRange{ 400 };
+
+		// The camera leaves SkyrimNet conversations alone while your weapon or
+		// spell is drawn (bNotWithWeaponDrawn), and while anyone hostile to you is
+		// within hostileRange units, fighting or not (bNotNearHostiles,
+		// iHostileRange). A filmed conversation is handed back when either starts.
+		bool notWithWeaponDrawn{ true };
+		bool notNearHostiles{ true };
+		int  hostileRange{ 3000 };
 	};
 
 	// Who the camera is on when the player overrides it with the hotkey. Not
